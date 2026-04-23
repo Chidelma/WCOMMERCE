@@ -1,270 +1,234 @@
-import * as pulumi from "@pulumi/pulumi";
 import * as aws from "@pulumi/aws";
-import * as awsx from '@pulumi/awsx'
+import * as awsx from "@pulumi/awsx";
+import * as pulumi from "@pulumi/pulumi";
 
-const project_name = 'Woo-Commerce'
+const projectName = "wcommerce";
+const applicationPort = 5000;
+const httpPort = 80;
+const apiHealthPath = "/WeatherForecast";
 
-const path = '/WeatherForecast'
+const tags = {
+    Name: projectName,
+    Project: "WCOMMERCE",
+};
 
-const tags = { 
-  Name: `${project_name}`
-}
+const vpc = new awsx.ec2.Vpc(`${projectName}-vpc`, {
+    cidrBlock: "10.0.0.0/16",
+    instanceTenancy: "default",
+    tags,
+});
 
-// Promise to retrieve property values of resources
-async function getValue<T>(output: pulumi.Output<T>) {
-
-  return new Promise((resolve: (value: T) => void) => {
-      output.apply(out => {
-          resolve(out)
-      })
-  })
-}
-
-(async () => {
-
-  // Create a repository to store image for web
-  const repoWeb = new awsx.ecr.Repository(`${project_name}-web`, {
-    tags: tags
-  })
-
-  // Create a repository to store image for api
-  const repoApi = new awsx.ecr.Repository(`${project_name}-api`, {
-      tags: tags
-  })
-
-  // Build an image from Dockerfile stored in system and store in repo
-  const imageWeb = new awsx.ecr.Image(`${project_name}-web`, {
-    repositoryUrl: repoWeb.url,
-    path: './infra-web',
-  })
-
-  // Build an image from Dockerfile stored in system and store in repo
-  const imageApi = new awsx.ecr.Image(`${project_name}-api`, {
-      repositoryUrl: repoApi.url,
-      path: './infra-api'
-  })
-  
-  // Create a VPC for all Woo-Commerce resources
-  const vpc = new awsx.ec2.Vpc(`${project_name}-vpc`, {
-    cidrBlock: "10.0.0.0/20",
-    tags: tags
-  });
-
-  // Security Group to only allow incoming request through port 5000 for hosting app
-  const sg_web = new aws.ec2.SecurityGroup(`${project_name}-sg-web`, {
-      vpcId: vpc.vpcId,
-      ingress: [
+const frontendSecurityGroup = new aws.ec2.SecurityGroup(`${projectName}-frontend-sg`, {
+    vpcId: vpc.vpcId,
+    description: "Security boundary for the public storefront load balancer and private web tasks.",
+    ingress: [
         {
-          fromPort: 5000,
-          toPort: 5000,
-          protocol: "tcp",
-          cidrBlocks: ["0.0.0.0/0"]
+            description: "Allow public HTTP traffic to the storefront load balancer.",
+            fromPort: httpPort,
+            toPort: httpPort,
+            protocol: "tcp",
+            cidrBlocks: ["0.0.0.0/0"],
         },
         {
-          fromPort: 80,
-          toPort: 80,
-          protocol: "tcp",
-          cidrBlocks: ["0.0.0.0/0"]
-        }
-      ],
-      egress: [{
-          fromPort: 0,
-          toPort: 0,
-          protocol: "-1",
-          cidrBlocks: ["0.0.0.0/0"]
-      }],
-      tags: tags
-  });
-
-  // Security Group to only allow incoming request through ports 5000 and 80 for business app
-  const sg_api = new aws.ec2.SecurityGroup(`${project_name}-sg-api`, {
-    vpcId: vpc.vpcId,
-    ingress: [
-      {
-        fromPort: 5000,
-        toPort: 5000,
-        protocol: "tcp",
-        cidrBlocks: ["0.0.0.0/0"]
-      },
-      {
-        fromPort: 80,
-        toPort: 80,
-        protocol: "tcp",
-        cidrBlocks: ["0.0.0.0/0"]
-      }
+            description: "Allow the storefront load balancer to reach the web tasks.",
+            fromPort: applicationPort,
+            toPort: applicationPort,
+            protocol: "tcp",
+            self: true,
+        },
     ],
-    egress: [{
-        fromPort: 0,
-        toPort: 0,
-        protocol: "-1",
-        cidrBlocks: ["0.0.0.0/0"]
-    }],
-    tags: tags
-  })
-
-  // Security Group to only allow incoming request through port 3306 for Database
-  const sg_rds = new aws.ec2.SecurityGroup(`${project_name}-sg-rds`, {
-    vpcId: vpc.vpcId,
-    ingress: [
-      {
-        fromPort: 3306,
-        toPort: 3306,
-        protocol: "tcp",
-        cidrBlocks: ["0.0.0.0/0"]
-      }
+    egress: [
+        {
+            fromPort: 0,
+            toPort: 0,
+            protocol: "-1",
+            cidrBlocks: ["0.0.0.0/0"],
+        },
     ],
-    egress: [{
-      fromPort: 0,
-      toPort: 0,
-      protocol: "-1",
-      cidrBlocks: ["0.0.0.0/0"]
-    }],
-    tags: tags
-  })
+    tags: {
+        ...tags,
+        Role: "frontend",
+    },
+});
 
-  // Create an ECS cluster
-  const cluster = new aws.ecs.Cluster(`${project_name}-cluster`, {
-    tags: tags
-  })
+const backendSecurityGroup = new aws.ec2.SecurityGroup(`${projectName}-backend-sg`, {
+    vpcId: vpc.vpcId,
+    description: "Security boundary for the internal API load balancer and private API tasks.",
+    ingress: [
+        {
+            description: "Allow web tasks to call the internal API load balancer.",
+            fromPort: httpPort,
+            toPort: httpPort,
+            protocol: "tcp",
+            securityGroups: [frontendSecurityGroup.id],
+        },
+        {
+            description: "Allow the internal API load balancer to reach the API tasks.",
+            fromPort: applicationPort,
+            toPort: applicationPort,
+            protocol: "tcp",
+            self: true,
+        },
+    ],
+    egress: [
+        {
+            fromPort: 0,
+            toPort: 0,
+            protocol: "-1",
+            cidrBlocks: ["0.0.0.0/0"],
+        },
+    ],
+    tags: {
+        ...tags,
+        Role: "backend",
+    },
+});
 
-  // Create a load balancer for the hosting app
-  const web_lb = new awsx.lb.ApplicationLoadBalancer(`${project_name}-web-lb`, {
-    tags: tags,
-    securityGroups: [await getValue(sg_web.id)],
-    subnetIds: vpc.publicSubnetIds
-  })
+const frontendRepository = new awsx.ecr.Repository(`${projectName}-web`, { tags });
+const backendRepository = new awsx.ecr.Repository(`${projectName}-api`, { tags });
 
-  // Create a load balancer for the business app with health check for endpoint
-  const api_lb = new awsx.lb.ApplicationLoadBalancer(`${project_name}-api-lb`, {
-    tags: tags,
-    internal: true,
-    securityGroups: [await getValue(sg_api.id)],
-    subnetIds: vpc.privateSubnetIds,
+const frontendImage = new awsx.ecr.Image(`${projectName}-web`, {
+    repositoryUrl: frontendRepository.url,
+    path: "./infra-web",
+});
+
+const backendImage = new awsx.ecr.Image(`${projectName}-api`, {
+    repositoryUrl: backendRepository.url,
+    path: "./infra-api",
+});
+
+const cluster = new aws.ecs.Cluster(`${projectName}-cluster`, { tags });
+
+const frontendLoadBalancer = new awsx.lb.ApplicationLoadBalancer(`${projectName}-web-lb`, {
+    tags,
+    subnetIds: vpc.publicSubnetIds,
+    securityGroups: [frontendSecurityGroup.id],
     defaultTargetGroup: {
-      healthCheck: {
-        path: path
-      }
-    }
-  })
-
-  // Subnet Group required for RDS instance to place in the correct Subnets
-  const subnet_grp = new aws.rds.SubnetGroup(`${project_name.toLowerCase()}-sn-grp`, {
-    name: `${project_name.toLocaleLowerCase()}-subnet_group`,
-    subnetIds: await getValue(vpc.privateSubnetIds),
-    tags: tags
-  })
-
-  // Creation of RDS Instance 
-  const rds_instance = new aws.rds.Instance(`${project_name.toLowerCase()}-rds`, {
-    engine: "mysql",
-    instanceClass: "db.t3.micro",
-    allocatedStorage: 20,
-    vpcSecurityGroupIds: [await getValue(sg_rds.id)],
-    multiAz: true,
-    publiclyAccessible: false,
-    storageType: "gp2",
-    username: 'sa',
-    password: process.env.RDS_PASSWORD,
-    dbSubnetGroupName: subnet_grp.name,
-    tags: tags
-  })
-
-  // Task definition for Business app using Fargate
-  const api_td = new awsx.ecs.FargateTaskDefinition(`${project_name}-api-td`, {
-    tags: tags,
-    containers: {
-      infraapi: {
-        image: imageApi.imageUri,
-        memory: 128,
-        cpu: 512,
-        environment: [{
-          name: 'ConnectionString',
-          value: `server=${rds_instance.endpoint};uid=${rds_instance.username};pwd=${rds_instance.password};database=test`
-        }],
-        portMappings: [
-          {
-            containerPort: 5000,
-            hostPort: 5000
-          }
-        ],
-        name: "woo-api"
-      }
-    }
-  })
-
-  // Task definition for hosting app using Fargate
-  const web_td = new awsx.ecs.FargateTaskDefinition(`${project_name}-web-td`, {
-    tags: tags,
-    containers: {
-      infraweb: {
-        image: imageWeb.imageUri,
-        memory: 128,
-        cpu: 512,
-        environment: [{
-          name: 'ApiAddress',
-          value: pulumi.interpolate`http://${api_lb.loadBalancer.dnsName}${path}`
-        }],
-        portMappings: [
-          {
-            containerPort: 5000,
-            hostPort: 5000
-          }
-        ],
-        name: "woo-web"
-      }
-    }
-  })
-
-  // Lets use a serverless service (Fargate) from Elastic Container Service
-  const web_srv = new awsx.ecs.FargateService(`${project_name}-web-srv`, {
-    networkConfiguration: {
-      assignPublicIp: true,
-      subnets: vpc.publicSubnetIds,
-      securityGroups: [await getValue(sg_web.id)]
+        port: applicationPort,
+        protocol: "HTTP",
+        targetType: "ip",
+        healthCheck: {
+            path: "/",
+        },
     },
+});
+
+const backendLoadBalancer = new awsx.lb.ApplicationLoadBalancer(`${projectName}-api-lb`, {
+    tags,
+    internal: true,
+    subnetIds: vpc.privateSubnetIds,
+    securityGroups: [backendSecurityGroup.id],
+    defaultTargetGroup: {
+        port: applicationPort,
+        protocol: "HTTP",
+        targetType: "ip",
+        healthCheck: {
+            path: apiHealthPath,
+        },
+    },
+});
+
+const frontendTaskDefinition = new awsx.ecs.FargateTaskDefinition(`${projectName}-web-td`, {
+    tags,
+    containers: {
+        infraweb: {
+            image: frontendImage.imageUri,
+            name: "woo-web",
+            cpu: 512,
+            memory: 128,
+            environment: [
+                {
+                    name: "ApiAddress",
+                    value: pulumi.interpolate`http://${backendLoadBalancer.loadBalancer.dnsName}${apiHealthPath}`,
+                },
+            ],
+            portMappings: [
+                {
+                    containerPort: applicationPort,
+                    hostPort: applicationPort,
+                },
+            ],
+        },
+    },
+});
+
+const backendTaskDefinition = new awsx.ecs.FargateTaskDefinition(`${projectName}-api-td`, {
+    tags,
+    containers: {
+        infraapi: {
+            image: backendImage.imageUri,
+            name: "woo-api",
+            cpu: 512,
+            memory: 128,
+            portMappings: [
+                {
+                    containerPort: applicationPort,
+                    hostPort: applicationPort,
+                },
+            ],
+        },
+    },
+});
+
+const frontendService = new awsx.ecs.FargateService(`${projectName}-web-srv`, {
     cluster: cluster.arn,
     desiredCount: 2,
-    taskDefinition: web_td.taskDefinition.arn,
-    tags: tags,
-    loadBalancers: [{
-      targetGroupArn: web_lb.defaultTargetGroup.arn,
-      containerName: 'infraweb',
-      containerPort: 5000
-    }]
-  })
-
-  const api_srv = new awsx.ecs.FargateService(`${project_name}-api-srv`, {
+    taskDefinition: frontendTaskDefinition.taskDefinition.arn,
+    tags,
     networkConfiguration: {
-      subnets: vpc.privateSubnetIds,
-      securityGroups: [await getValue(sg_api.id)],
-      assignPublicIp: false
+        assignPublicIp: false,
+        subnets: vpc.privateSubnetIds,
+        securityGroups: [frontendSecurityGroup.id],
     },
+    loadBalancers: [
+        {
+            targetGroupArn: frontendLoadBalancer.defaultTargetGroup.arn,
+            containerName: "infraweb",
+            containerPort: applicationPort,
+        },
+    ],
+});
+
+const backendService = new awsx.ecs.FargateService(`${projectName}-api-srv`, {
     cluster: cluster.arn,
     desiredCount: 2,
-    taskDefinition: api_td.taskDefinition.arn,
-    tags: tags,
-    loadBalancers: [{
-      targetGroupArn: api_lb.defaultTargetGroup.arn,
-      containerName: 'infraapi',
-      containerPort: 5000
-    }]
-  })
+    taskDefinition: backendTaskDefinition.taskDefinition.arn,
+    tags,
+    networkConfiguration: {
+        assignPublicIp: false,
+        subnets: vpc.privateSubnetIds,
+        securityGroups: [backendSecurityGroup.id],
+    },
+    loadBalancers: [
+        {
+            targetGroupArn: backendLoadBalancer.defaultTargetGroup.arn,
+            containerName: "infraapi",
+            containerPort: applicationPort,
+        },
+    ],
+});
 
-  // Apply WAF to load balancer for hosting app
-  const lb_acl = new aws.wafv2.WebAcl(`${project_name}-acl`, {
+const webAcl = new aws.wafv2.WebAcl(`${projectName}-acl`, {
     scope: "REGIONAL",
     defaultAction: {
-      allow: {}
+        allow: {},
     },
     visibilityConfig: {
-      cloudwatchMetricsEnabled: false,
-      metricName: `${project_name}-acl-metric`,
-      sampledRequestsEnabled: false
-    }
-  })
+        cloudwatchMetricsEnabled: false,
+        metricName: `${projectName}-acl-metric`,
+        sampledRequestsEnabled: false,
+    },
+    tags,
+});
 
-  const lb_assoc = new aws.wafv2.WebAclAssociation(`${project_name}-assoc`, {
-    resourceArn: web_lb.loadBalancer.arn,
-    webAclArn: lb_acl.arn
-  })
-})()
+new aws.wafv2.WebAclAssociation(`${projectName}-acl-association`, {
+    resourceArn: frontendLoadBalancer.loadBalancer.arn,
+    webAclArn: webAcl.arn,
+});
+
+export const frontendUrl = pulumi.interpolate`http://${frontendLoadBalancer.loadBalancer.dnsName}`;
+export const internalApiUrl = pulumi.interpolate`http://${backendLoadBalancer.loadBalancer.dnsName}${apiHealthPath}`;
+export const frontendSecurityGroupId = frontendSecurityGroup.id;
+export const backendSecurityGroupId = backendSecurityGroup.id;
+export const frontendServiceName = frontendService.service.name;
+export const backendServiceName = backendService.service.name;
