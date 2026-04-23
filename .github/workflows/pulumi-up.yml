@@ -1,0 +1,110 @@
+name: Pulumi Up
+
+on:
+  push:
+    branches: [main, master, staging]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: wcommerce-up-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate infrastructure source
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - run: npm ci
+      - run: npx tsc --noEmit
+
+  apply:
+    name: Pulumi up
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - id: config
+        name: Detect deployment configuration
+        shell: bash
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          AWS_ROLE_TO_ASSUME: ${{ vars.AWS_ROLE_TO_ASSUME }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          PULUMI_STACK: ${{ vars.PULUMI_STACK }}
+          PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
+          PULUMI_BACKEND_URL: ${{ vars.PULUMI_BACKEND_URL }}
+        run: |
+          ready=true
+
+          if [ -z "$AWS_REGION" ] || [ -z "$PULUMI_STACK" ]; then
+            ready=false
+          fi
+
+          if [ -z "$AWS_ROLE_TO_ASSUME" ] && [ -z "$AWS_ACCESS_KEY_ID" ]; then
+            ready=false
+          fi
+
+          if [ -z "$PULUMI_ACCESS_TOKEN" ] && [ -z "$PULUMI_BACKEND_URL" ]; then
+            ready=false
+          fi
+
+          echo "ready=$ready" >> "$GITHUB_OUTPUT"
+
+      - name: Skip apply when repo secrets are not configured
+        if: steps.config.outputs.ready != 'true'
+        run: echo "Skipping Pulumi up because AWS and Pulumi configuration is incomplete."
+
+      - uses: actions/checkout@v4
+        if: steps.config.outputs.ready == 'true'
+
+      - uses: actions/setup-node@v4
+        if: steps.config.outputs.ready == 'true'
+        with:
+          node-version: "20"
+          cache: npm
+
+      - if: steps.config.outputs.ready == 'true'
+        run: npm ci
+
+      - name: Configure AWS credentials via OIDC
+        if: steps.config.outputs.ready == 'true' && vars.AWS_ROLE_TO_ASSUME != ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Configure AWS credentials via secrets
+        if: steps.config.outputs.ready == 'true' && vars.AWS_ROLE_TO_ASSUME == ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Pulumi login
+        if: steps.config.outputs.ready == 'true' && vars.PULUMI_BACKEND_URL != ''
+        shell: bash
+        env:
+          PULUMI_CONFIG_PASSPHRASE: ${{ secrets.PULUMI_CONFIG_PASSPHRASE }}
+        run: pulumi login "${{ vars.PULUMI_BACKEND_URL }}"
+
+      - uses: pulumi/actions@v5
+        if: steps.config.outputs.ready == 'true'
+        with:
+          command: up
+          stack-name: ${{ vars.PULUMI_STACK }}
+          refresh: true
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
+          PULUMI_CONFIG_PASSPHRASE: ${{ secrets.PULUMI_CONFIG_PASSPHRASE }}
