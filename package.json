@@ -2,11 +2,12 @@
     "name": "infra-team-test",
     "main": "index.ts",
     "devDependencies": {
-        "@types/node": "^16"
+        "@types/node": "^16",
+        "typescript": "^4.9.5"
     },
     "dependencies": {
-        "@pulumi/pulumi": "^3.0.0",
         "@pulumi/aws": "^5.0.0",
-        "@pulumi/awsx": "^1.0.0"
+        "@pulumi/awsx": "^1.0.0",
+        "@pulumi/pulumi": "^3.0.0"
     }
 }
