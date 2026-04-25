@@ -14,18 +14,21 @@ export interface EcsConfig {
     backendDnsName: pulumi.Output<string>
     apiHealthPath: string
     frontendPort: number
+    frontendTargetGroupArn: pulumi.Output<string>
+    backendTargetGroupArn: pulumi.Output<string>
 }
 
 export interface EcsResources {
     frontendTaskDefinition: awsx.ecs.FargateTaskDefinition
     backendTaskDefinition: awsx.ecs.FargateTaskDefinition
-    frontendService: awsx.ecs.FargateService
-    backendService: awsx.ecs.FargateService
+    frontendService: aws.ecs.Service
+    backendService: aws.ecs.Service
 }
 
 export function createEcsServices(config: EcsConfig): EcsResources {
     const { projectName, tags, cluster, frontendSecurityGroupId, backendSecurityGroupId, 
-            frontendImageUri, backendImageUri, vpc, backendDnsName, apiHealthPath, frontendPort } = config
+            frontendImageUri, backendImageUri, vpc, backendDnsName, apiHealthPath, 
+            frontendPort, frontendTargetGroupArn, backendTargetGroupArn } = config
 
     const frontendTaskDefinition = new awsx.ecs.FargateTaskDefinition(`${projectName}-web-td`, {
         tags,
@@ -69,11 +72,11 @@ export function createEcsServices(config: EcsConfig): EcsResources {
         },
     })
 
-    const frontendService = new awsx.ecs.FargateService(`${projectName}-web-srv`, {
+    const frontendService = new aws.ecs.Service(`${projectName}-web-srv`, {
         cluster: cluster.arn,
         desiredCount: 2,
         taskDefinition: frontendTaskDefinition.taskDefinition.arn,
-        tags,
+        launchType: "FARGATE",
         networkConfiguration: {
             assignPublicIp: false,
             subnets: vpc.privateSubnetIds,
@@ -81,18 +84,18 @@ export function createEcsServices(config: EcsConfig): EcsResources {
         },
         loadBalancers: [
             {
-                targetGroupArn: null,
+                targetGroupArn: frontendTargetGroupArn,
                 containerName: "infrawweb",
                 containerPort: frontendPort,
             },
         ],
     })
 
-    const backendService = new awsx.ecs.FargateService(`${projectName}-api-srv`, {
+    const backendService = new aws.ecs.Service(`${projectName}-api-srv`, {
         cluster: cluster.arn,
         desiredCount: 2,
         taskDefinition: backendTaskDefinition.taskDefinition.arn,
-        tags,
+        launchType: "FARGATE",
         networkConfiguration: {
             assignPublicIp: false,
             subnets: vpc.privateSubnetIds,
@@ -100,7 +103,7 @@ export function createEcsServices(config: EcsConfig): EcsResources {
         },
         loadBalancers: [
             {
-                targetGroupArn: null,
+                targetGroupArn: backendTargetGroupArn,
                 containerName: "infrawapi",
                 containerPort: frontendPort,
             },

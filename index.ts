@@ -2,9 +2,9 @@ import * as aws from "@pulumi/aws"
 import * as awsx from "@pulumi/awsx"
 import * as pulumi from "@pulumi/pulumi"
 
-import { createNetwork, NetworkConfig } from "./lib/network"
-import { createLoadBalancers, LoadBalancerConfig } from "./lib/loadBalancer"
-import { createEcsServices, EcsConfig } from "./lib/ecs"
+import { createNetwork } from "./lib/network"
+import { createLoadBalancers } from "./lib/loadBalancer"
+import { createEcsServices } from "./lib/ecs"
 import { createWaf } from "./lib/waf"
 
 const projectName = "wcommerce"
@@ -66,36 +66,11 @@ const { frontendService, backendService } = createEcsServices({
     backendDnsName: backendLoadBalancer.loadBalancer.dnsName,
     apiHealthPath,
     frontendPort: applicationPort,
+    frontendTargetGroupArn: frontendLoadBalancer.defaultTargetGroup.arn,
+    backendTargetGroupArn: backendLoadBalancer.defaultTargetGroup.arn,
 })
 
-// Attach services to load balancer target groups
-new aws.ecs.Service("frontend-service-lb-attachment", {
-    cluster: cluster.arn,
-    serviceName: frontendService.service.name,
-    taskDefinition: "",
-    loadBalancers: [
-        {
-            targetGroupArn: frontendLoadBalancer.defaultTargetGroup.arn,
-            containerName: "infrawweb",
-            containerPort: applicationPort,
-        },
-    ],
-}, { dependsOn: [frontendService] })
-
-new aws.ecs.Service("backend-service-lb-attachment", {
-    cluster: cluster.arn,
-    serviceName: backendService.service.name,
-    taskDefinition: "",
-    loadBalancers: [
-        {
-            targetGroupArn: backendLoadBalancer.defaultTargetGroup.arn,
-            containerName: "infrawapi",
-            containerPort: applicationPort,
-        },
-    ],
-}, { dependsOn: [backendService] })
-
-// Create WAF and associate with frontend load balancer
+// Create WAFand associate with frontend load balancer
 createWaf({
     projectName,
     tags,
@@ -107,5 +82,5 @@ export const frontendUrl = pulumi.interpolate`http://${frontendLoadBalancer.load
 export const internalApiUrl = pulumi.interpolate`http://${backendLoadBalancer.loadBalancer.dnsName}${apiHealthPath}`
 export const frontendSecurityGroupId = frontendSecurityGroup.id
 export const backendSecurityGroupId = backendSecurityGroup.id
-export const frontendServiceName = frontendService.service.name
-export const backendServiceName = backendService.service.name
+export const frontendServiceName = frontendService.name
+export const backendServiceName = backendService.name
