@@ -3,3 +3,6 @@ node_modules
 AGENTS.md
 CLAUDE.md
 .github/copilot-instructions.md
+.claude
+.codex
+.vscode
